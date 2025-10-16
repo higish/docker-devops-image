@@ -15,6 +15,9 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+ADD SHA-256_Z-Scaler_Root_Certificate.crt /usr/local/share/ca-certificates
+RUN update-ca-certificates
+
 # Add additional repositories
 RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -50,7 +53,6 @@ RUN apt-get update && apt-get install -y \
     libc6-dev \
     libcurl4 \
     libgbm-dev \
-    libgconf-2-4 \
     libgsl-dev \
     libgtk-3-0 \
     libmagic-dev \
@@ -68,7 +70,7 @@ RUN apt-get update && apt-get install -y \
     mediainfo \
     mercurial \
     net-tools \
-    netcat \
+    netcat-traditional \
     openssh-client \
     p7zip-full \
     p7zip-rar \
@@ -182,9 +184,15 @@ RUN add-apt-repository ppa:deadsnakes/ppa -y \
     python3.13-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-setuptools \
+    python3-wheel \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install pipx and common Python tools
-RUN python3 -m pip install --upgrade pip setuptools wheel \
-    && python3 -m pip install pipx \
+RUN python3 -m pip install --break-system-packages --upgrade setuptools \
+    && python3 -m pip install --break-system-packages pipx \
     && python3 -m pipx ensurepath
 
 ENV PATH=/root/.local/bin:$PATH
@@ -201,19 +209,19 @@ RUN pipx install poetry \
     && pipx install pytest
 
 # Install Go
-ENV GO_VERSION=1.23.1
-RUN wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
-    && rm go${GO_VERSION}.linux-amd64.tar.gz
-
-ENV PATH=/usr/local/go/bin:$PATH
-ENV GOPATH=/go
-ENV PATH=$GOPATH/bin:$PATH
-
-# Install common Go tools
-RUN go install golang.org/x/tools/gopls@latest \
-    && go install github.com/go-delve/delve/cmd/dlv@latest \
-    && go install honnef.co/go/tools/cmd/staticcheck@latest
+#ENV GO_VERSION=1.23.1
+#RUN wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+#    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
+#    && rm go${GO_VERSION}.linux-amd64.tar.gz
+#
+#ENV PATH=/usr/local/go/bin:$PATH
+#ENV GOPATH=/go
+#ENV PATH=$GOPATH/bin:$PATH
+#
+## Install common Go tools
+#RUN go install golang.org/x/tools/gopls@latest \
+#    && go install github.com/go-delve/delve/cmd/dlv@latest \
+#    && go install honnef.co/go/tools/cmd/staticcheck@latest
 
 # Install Java via SDKMAN
 RUN curl -s "https://get.sdkman.io" | bash \
@@ -229,10 +237,8 @@ ENV JAVA_HOME=/root/.sdkman/candidates/java/current
 ENV PATH=$JAVA_HOME/bin:$PATH
 
 # Install .NET SDK
-RUN wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb \
-    && dpkg -i packages-microsoft-prod.deb \
-    && rm packages-microsoft-prod.deb \
-    && apt-get update && apt-get install -y \
+RUN add-apt-repository -y --ppa ppa:dotnet/backports \
+    && apt-get install -y \
     dotnet-sdk-6.0 \
     dotnet-sdk-7.0 \
     dotnet-sdk-8.0 \
@@ -311,6 +317,10 @@ RUN curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64 \
 # Install yq (YAML processor)
 RUN wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq \
     && chmod +x /usr/bin/yq
+
+# Add Zscaler certificate to Python certifi store
+RUN cat /usr/local/share/ca-certificates/SHA-256_Z-Scaler_Root_Certificate.crt >> /opt/az/lib/python3.13/site-packages/pip/_vendor/certifi/cacert.pem \
+    && cat /usr/local/share/ca-certificates/SHA-256_Z-Scaler_Root_Certificate.crt >> /opt/az/lib/python3.13/site-packages/certifi/cacert.pem
 
 # Install Azure DevOps CLI extension
 RUN az extension add --name azure-devops
