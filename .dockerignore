@@ -1,0 +1,67 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+*.md
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+azure-pipelines*.yml
+.travis.yml
+.circleci/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# Test files
+test/
+tests/
+*.test
+*_test.go
+spec/
+
+# Build artifacts
+build/
+dist/
+target/
+bin/
+obj/
+
+# Node modules (if any local testing)
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Dependencies
+vendor/
+packages/
+
+# Secrets (should never be in repo anyway)
+*.key
+*.pem
+*.p12
+.env
+.env.local
+secrets/
+*.secret
