@@ -6,17 +6,26 @@ if [ -z "$AZP_URL" ]; then
   exit 1
 fi
 
-if [ -z "$AZP_TOKEN_FILE" ]; then
-  if [ -z "$AZP_TOKEN" ]; then
-    echo 1>&2 "error: missing AZP_TOKEN environment variable"
-    exit 1
+# Determine authentication method based on environment variables
+if [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_TENANT_ID" ]; then
+  echo "Using Service Principal authentication"
+  AUTH_TYPE="SP"
+else
+  echo "Using PAT authentication"
+  AUTH_TYPE="PAT"
+  
+  if [ -z "$AZP_TOKEN_FILE" ]; then
+    if [ -z "$AZP_TOKEN" ]; then
+      echo 1>&2 "error: missing AZP_TOKEN environment variable"
+      exit 1
+    fi
+
+    AZP_TOKEN_FILE=/azp/.token
+    echo -n $AZP_TOKEN > "$AZP_TOKEN_FILE"
   fi
 
-  AZP_TOKEN_FILE=/azp/.token
-  echo -n $AZP_TOKEN > "$AZP_TOKEN_FILE"
+  unset AZP_TOKEN
 fi
-
-unset AZP_TOKEN
 
 if [ -n "$AZP_WORK" ]; then
   mkdir -p "$AZP_WORK"
@@ -32,9 +41,16 @@ cleanup() {
   if [ -e config.sh ]; then
     print_header "Cleanup. Removing Azure Pipelines agent..."
 
-    ./config.sh remove --unattended \
-      --auth PAT \
-      --token $(cat "$AZP_TOKEN_FILE")
+    if [ "$AUTH_TYPE" = "SP" ]; then
+      # Service Principal cleanup - agent will use managed identity
+      ./config.sh remove --unattended \
+        --auth SP
+    else
+      # PAT cleanup
+      ./config.sh remove --unattended \
+        --auth PAT \
+        --token $(cat "$AZP_TOKEN_FILE")
+    fi
   fi
 }
 
@@ -52,10 +68,27 @@ sleep 30
 
 print_header "1. Determining matching Azure Pipelines agent..."
 
-AZP_AGENT_RESPONSE=$(curl -LsS \
-  -u user:$(cat "$AZP_TOKEN_FILE") \
-  -H 'Accept:application/json;api-version=3.0-preview' \
-  "$AZP_URL/_apis/distributedtask/packages/agent?platform=linux-x64")
+if [ "$AUTH_TYPE" = "SP" ]; then
+  # For Service Principal, get Azure AD token from IMDS
+  echo "Acquiring Azure AD token for managed identity..."
+  AZURE_TOKEN=$(curl -s 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://app.vssps.visualstudio.com/' -H Metadata:true | jq -r '.access_token')
+  
+  if [ -z "$AZURE_TOKEN" ] || [ "$AZURE_TOKEN" = "null" ]; then
+    echo 1>&2 "error: failed to acquire Azure AD token from IMDS"
+    exit 1
+  fi
+  
+  AZP_AGENT_RESPONSE=$(curl -LsS \
+    -H "Authorization: Bearer $AZURE_TOKEN" \
+    -H 'Accept:application/json;api-version=3.0-preview' \
+    "$AZP_URL/_apis/distributedtask/packages/agent?platform=linux-x64")
+else
+  # For PAT, use basic auth
+  AZP_AGENT_RESPONSE=$(curl -LsS \
+    -u user:$(cat "$AZP_TOKEN_FILE") \
+    -H 'Accept:application/json;api-version=3.0-preview' \
+    "$AZP_URL/_apis/distributedtask/packages/agent?platform=linux-x64")
+fi
 
 if echo "$AZP_AGENT_RESPONSE" | jq . >/dev/null 2>&1; then
   AZP_AGENTPACKAGE_URL=$(echo "$AZP_AGENT_RESPONSE" \
@@ -78,18 +111,31 @@ trap 'cleanup; exit 143' TERM
 
 print_header "3. Configuring Azure Pipelines agent..."
 
-./config.sh --unattended \
-  --agent "${AZP_AGENT_NAME:-$(hostname)}" \
-  --url "$AZP_URL" \
-  --auth PAT \
-  --token $(cat "$AZP_TOKEN_FILE") \
-  --pool "${AZP_POOL:-Default}" \
-  --work "${AZP_WORK:-_work}" \
-  --replace \
-  --acceptTeeEula & wait $!
-
-# remove the administrative token before accepting work
-rm $AZP_TOKEN_FILE
+if [ "$AUTH_TYPE" = "SP" ]; then
+  # Service Principal authentication
+  ./config.sh --unattended \
+    --agent "${AZP_AGENT_NAME:-$(hostname)}" \
+    --url "$AZP_URL" \
+    --auth SP \
+    --pool "${AZP_POOL:-Default}" \
+    --work "${AZP_WORK:-_work}" \
+    --replace \
+    --acceptTeeEula & wait $!
+else
+  # PAT authentication
+  ./config.sh --unattended \
+    --agent "${AZP_AGENT_NAME:-$(hostname)}" \
+    --url "$AZP_URL" \
+    --auth PAT \
+    --token $(cat "$AZP_TOKEN_FILE") \
+    --pool "${AZP_POOL:-Default}" \
+    --work "${AZP_WORK:-_work}" \
+    --replace \
+    --acceptTeeEula & wait $!
+  
+  # remove the administrative token before accepting work
+  rm $AZP_TOKEN_FILE
+fi
 
 print_header "4. Running Azure Pipelines agent..."
 
