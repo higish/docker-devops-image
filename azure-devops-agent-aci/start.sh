@@ -78,17 +78,8 @@ trap 'cleanup; exit 143' TERM
 
 print_header "3. Configuring Azure Pipelines agent..."
 
-# Generate unique agent name by appending random 6-character suffix
-# This allows --once flag to work properly on container restarts
-# Each restart gets a new unique agent name in the same pool
-RANDOM_SUFFIX=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
-UNIQUE_AGENT_NAME="${AZP_AGENT_NAME:-$(hostname)}-${RANDOM_SUFFIX}"
-
-echo "Agent name: $UNIQUE_AGENT_NAME"
-echo "Agent pool: ${AZP_POOL:-Default}"
-
 ./config.sh --unattended \
-  --agent "$UNIQUE_AGENT_NAME" \
+  --agent "${AZP_AGENT_NAME:-$(hostname)}" \
   --url "$AZP_URL" \
   --auth PAT \
   --token $(cat "$AZP_TOKEN_FILE") \
