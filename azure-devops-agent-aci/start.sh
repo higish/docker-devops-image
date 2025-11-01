@@ -7,9 +7,23 @@ if [ -z "$AZP_URL" ]; then
 fi
 
 # Determine authentication method based on environment variables
-if [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_TENANT_ID" ]; then
+if [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_TENANT_ID" ] && [ -n "$AZURE_CLIENT_SECRET" ]; then
   echo "Using Service Principal authentication"
   AUTH_TYPE="SP"
+  
+  # Validate all SP credentials are present
+  if [ -z "$AZURE_CLIENT_ID" ]; then
+    echo 1>&2 "error: missing AZURE_CLIENT_ID environment variable"
+    exit 1
+  fi
+  if [ -z "$AZURE_TENANT_ID" ]; then
+    echo 1>&2 "error: missing AZURE_TENANT_ID environment variable"
+    exit 1
+  fi
+  if [ -z "$AZURE_CLIENT_SECRET" ]; then
+    echo 1>&2 "error: missing AZURE_CLIENT_SECRET environment variable"
+    exit 1
+  fi
 else
   echo "Using PAT authentication"
   AUTH_TYPE="PAT"
@@ -60,40 +74,39 @@ print_header() {
   echo -e "${lightcyan}$1${nocolor}"
 }
 
-# Let the agent ignore the token env variables
-export VSO_AGENT_IGNORE=AZP_TOKEN,AZP_TOKEN_FILE
+# Let the agent ignore the SP secret and GitHub token env variables to prevent them from being visible in Azure DevOps
+export VSO_AGENT_IGNORE=AZP_TOKEN,AZP_TOKEN_FILE,AZURE_CLIENT_SECRET,AZP_GITHUB_TOKEN
 
 # ACI in private vnet require time to get access to Internet
 sleep 30
 
 print_header "1. Determining matching Azure Pipelines agent..."
 
-if [ "$AUTH_TYPE" = "SP" ]; then
-  # For Service Principal, get Azure AD token from IMDS
-  echo "Acquiring Azure AD token for managed identity..."
-  AZURE_TOKEN=$(curl -s 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://app.vssps.visualstudio.com/' -H Metadata:true | jq -r '.access_token')
-  
-  if [ -z "$AZURE_TOKEN" ] || [ "$AZURE_TOKEN" = "null" ]; then
-    echo 1>&2 "error: failed to acquire Azure AD token from IMDS"
-    exit 1
-  fi
-  
-  AZP_AGENT_RESPONSE=$(curl -LsS \
-    -H "Authorization: Bearer $AZURE_TOKEN" \
-    -H 'Accept:application/json;api-version=3.0-preview' \
-    "$AZP_URL/_apis/distributedtask/packages/agent?platform=linux-x64")
+# Get the latest agent download URL from GitHub releases
+# Use AZP_GITHUB_TOKEN env var if provided to avoid rate limits (60/hr unauthenticated, 5000/hr authenticated)
+echo "Getting latest agent version from GitHub..."
+
+if [ -n "$AZP_GITHUB_TOKEN" ]; then
+  echo "Using authenticated GitHub API request..."
+  GITHUB_RELEASE=$(curl -s -H "Authorization: token ${AZP_GITHUB_TOKEN}" \
+    https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest)
 else
-  # For PAT, use basic auth
-  AZP_AGENT_RESPONSE=$(curl -LsS \
-    -u user:$(cat "$AZP_TOKEN_FILE") \
-    -H 'Accept:application/json;api-version=3.0-preview' \
-    "$AZP_URL/_apis/distributedtask/packages/agent?platform=linux-x64")
+  echo "Using unauthenticated GitHub API request (60 requests/hour limit)..."
+  GITHUB_RELEASE=$(curl -s https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest)
 fi
 
-if echo "$AZP_AGENT_RESPONSE" | jq . >/dev/null 2>&1; then
-  AZP_AGENTPACKAGE_URL=$(echo "$AZP_AGENT_RESPONSE" \
-    | jq -r '.value | map([.version.major,.version.minor,.version.patch,.downloadUrl]) | sort | .[length-1] | .[3]')
+# Extract the Linux x64 download URL from the release body markdown
+AZP_AGENTPACKAGE_URL=$(echo "$GITHUB_RELEASE" | jq -r '.body' | grep -oP 'Linux x64\s+\|\s+\[.*?\]\(\K[^)]+' | head -1)
+
+if [ -z "$AZP_AGENTPACKAGE_URL" ] || [ "$AZP_AGENTPACKAGE_URL" = "null" ]; then
+  echo 1>&2 "error: failed to get agent download URL from GitHub"
+  exit 1
 fi
+
+# Extract version from URL for logging
+AGENT_VERSION=$(echo "$AZP_AGENTPACKAGE_URL" | grep -oP 'agent/\K[0-9.]+')
+echo "Latest agent version: ${AGENT_VERSION}"
+echo "Download URL: ${AZP_AGENTPACKAGE_URL}"
 
 if [ -z "$AZP_AGENTPACKAGE_URL" -o "$AZP_AGENTPACKAGE_URL" == "null" ]; then
   echo 1>&2 "error: could not determine a matching Azure Pipelines agent - check that account '$AZP_URL' is correct and the token is valid for that account"
@@ -112,11 +125,14 @@ trap 'cleanup; exit 143' TERM
 print_header "3. Configuring Azure Pipelines agent..."
 
 if [ "$AUTH_TYPE" = "SP" ]; then
-  # Service Principal authentication
+  # Service Principal authentication with client secret
   ./config.sh --unattended \
     --agent "${AZP_AGENT_NAME:-$(hostname)}" \
     --url "$AZP_URL" \
     --auth SP \
+    --clientid "$AZURE_CLIENT_ID" \
+    --clientsecret "$AZURE_CLIENT_SECRET" \
+    --tenantid "$AZURE_TENANT_ID" \
     --pool "${AZP_POOL:-Default}" \
     --work "${AZP_WORK:-_work}" \
     --replace \
